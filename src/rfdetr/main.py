@@ -948,6 +948,7 @@ def get_args_parser():
     parser.add_argument("--ema_tau", default=0, type=float)
 
     parser.add_argument("--num_workers", default=2, type=int)
+    parser.add_argument("--include-descriptors", nargs='+', default=[], type=list, help='include optional descriptors for training')
 
     # distributed training parameters
     parser.add_argument("--device", default="cuda", help="device to use for training / testing")
@@ -1097,6 +1098,7 @@ def populate_args(
     dataset_dir=None,
     square_resize_div_64=False,
     aug_config=None,
+    include_descriptors=None,
     # Output parameters
     output_dir="output",
     dont_save_weights=False,
@@ -1204,6 +1206,7 @@ def populate_args(
         dataset_dir=dataset_dir,
         square_resize_div_64=square_resize_div_64,
         aug_config=aug_config,
+        include_descriptors=include_descriptors,
         output_dir=output_dir,
         dont_save_weights=dont_save_weights,
         checkpoint_interval=checkpoint_interval,

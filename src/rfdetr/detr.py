@@ -414,10 +414,18 @@ class RFDETR:
             labels = result["labels"]
             boxes = result["boxes"]
 
+            if "shape" in result:
+                shape = result["shape"]
+
             keep = scores > threshold
             scores = scores[keep]
             labels = labels[keep]
             boxes = boxes[keep]
+
+            data = {}
+            if "shape" in result:
+                shape = shape[keep]
+                data["shape"] = shape.cpu().numpy()
 
             if "masks" in result:
                 masks = result["masks"]
@@ -428,6 +436,7 @@ class RFDETR:
                     confidence=scores.float().cpu().numpy(),
                     class_id=labels.cpu().numpy(),
                     mask=masks.squeeze(1).cpu().numpy(),
+                    data=data,
                 )
             else:
                 detections = sv.Detections(

@@ -127,6 +127,7 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         transforms: Optional[Any],
         include_masks: bool = False,
         remap_category_ids: bool = False,
+        include_descriptors: Optional[list[str]] = None,
     ) -> None:
         super(CocoDetection, self).__init__(img_folder, ann_file)
         self._transforms = transforms
@@ -141,7 +142,7 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         else:
             self.cat2label = None
             self.label2cat = None
-        self.prepare = ConvertCoco(include_masks=include_masks, cat2label=self.cat2label)
+        self.prepare = ConvertCoco(include_masks=include_masks, cat2label=self.cat2label, include_descriptors=include_descriptors)
 
     def __getitem__(self, idx: int) -> Tuple[Any, Any]:
         img, target = super(CocoDetection, self).__getitem__(idx)
@@ -184,9 +185,15 @@ class ConvertCoco(object):
             that labels stay within the model's output range.
     """
 
-    def __init__(self, include_masks: bool = False, cat2label: Optional[Dict[int, int]] = None) -> None:
+    def __init__(
+        self,
+        include_masks: bool = False,
+        cat2label: Optional[Dict[int, int]] = None,
+        include_descriptors: Optional[list[str]] = None,
+    ) -> None:
         self.include_masks = include_masks
         self.cat2label = cat2label
+        self.include_descriptors = include_descriptors
 
     def __call__(self, image: Image.Image, target: Dict[str, Any]) -> Tuple[Image.Image, Dict[str, Any]]:
         w, h = image.size
@@ -206,6 +213,11 @@ class ConvertCoco(object):
         boxes[:, 1::2].clamp_(min=0, max=h)
 
         classes: List[int] = []
+
+        if self.include_descriptors:
+            descriptors = {}
+            for descriptor in self.include_descriptors:
+                descriptors[descriptor] = []
         for obj in anno:
             category_id = obj["category_id"]
             if getattr(self, "cat2label", None) is not None:
@@ -217,6 +229,12 @@ class ConvertCoco(object):
                 classes.append(self.cat2label[category_id])
             else:
                 classes.append(category_id)
+
+            if self.include_descriptors:
+                for descriptor in self.include_descriptors:
+                    descriptor_id = obj[f"{descriptor}_id"]
+                    descriptors[descriptor].append(obj[f'{descriptor}_id'])
+
         classes = torch.tensor(classes, dtype=torch.int64)
 
         keep = (boxes[:, 3] > boxes[:, 1]) & (boxes[:, 2] > boxes[:, 0])
@@ -227,6 +245,12 @@ class ConvertCoco(object):
         target["boxes"] = boxes
         target["labels"] = classes
         target["image_id"] = image_id
+
+        if self.include_descriptors:
+            for descriptor in self.include_descriptors:
+                descriptor_tensor = torch.tensor(descriptors[descriptor], dtype=torch.int64)
+                descriptor_tensor = descriptor_tensor[keep]
+                target[descriptor] = descriptor_tensor
 
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])
@@ -583,6 +607,7 @@ def build_roboflow_from_coco(image_set: str, args: Any, resolution: int) -> Coco
             ),
             include_masks=include_masks,
             remap_category_ids=True,
+            include_descriptors=args.include_descriptors,
         )
     else:
         logger.info(f"Building Roboflow {image_set} dataset at resolution {resolution}")
@@ -601,5 +626,6 @@ def build_roboflow_from_coco(image_set: str, args: Any, resolution: int) -> Coco
             ),
             include_masks=include_masks,
             remap_category_ids=True,
+            include_descriptors=args.include_descriptors,
         )
     return dataset

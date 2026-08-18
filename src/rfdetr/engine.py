@@ -90,6 +90,9 @@ def train_one_epoch(
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value:.6f}"))
     metric_logger.add_meter("class_error", utils.SmoothedValue(window_size=1, fmt="{value:.2f}"))
+    if args.include_descriptors:
+        for descriptor in args.include_descriptors:
+            metric_logger.add_meter(f"class_error_{descriptor}", utils.SmoothedValue(window_size=1, fmt="{value:.2f}"))
     print_freq = args.print_freq if args is not None else 10
     start_steps = epoch * num_training_steps_per_epoch
 
@@ -211,16 +214,31 @@ def train_one_epoch(
         metric_logger.update(class_error=loss_dict_reduced["class_error"])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
+        if args.include_descriptors:
+            for descriptor in args.include_descriptors:
+                if descriptor == "shape":
+                    metric_logger.update(class_error_shape=loss_dict_reduced[f"class_error_{descriptor}"])
+
         if use_progress_bar:
             log_dict = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-            progress_iter.set_postfix(
-                {
-                    "lr": f"{log_dict['lr']:.6f}",
-                    "class_loss": f"{log_dict['class_error']:.2f}",
-                    "box_loss": f"{log_dict['loss_bbox']:.2f}",
-                    "loss": f"{log_dict['loss']:.2f}",
-                }
-            )
+            initial_dict = {
+                "class_loss": f"{log_dict['class_error']:.2f}",
+                "box_loss": f"{log_dict['loss_bbox']:.2f}",
+                "loss": f"{log_dict['loss']:.2f}",
+            }
+            if args.include_descriptors:
+                for descriptor in args.include_descriptors:
+                    initial_dict[f"class_loss_{descriptor}"] = f"{log_dict[f"class_error_{descriptor}"]:.2f}"
+
+            progress_iter.set_postfix(initial_dict)
+            #progress_iter.set_postfix(
+            #    {
+            #        "lr": f"{log_dict['lr']:.6f}",
+            #        "class_loss": f"{log_dict['class_error']:.2f}",
+            #        "box_loss": f"{log_dict['loss_bbox']:.2f}",
+            #        "loss": f"{log_dict['loss']:.2f}",
+            #    }
+            #)
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     logger.info(f"Epoch {epoch + 1} stats: {metric_logger}")
@@ -421,6 +439,9 @@ def evaluate(model, criterion, postprocess, data_loader, base_ds, device, args=N
 
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("class_error", utils.SmoothedValue(window_size=1, fmt="{value:.2f}"))
+    if args.include_descriptors:
+        for descriptor in args.include_descriptors:
+            metric_logger.add_meter(f"class_error_{descriptor}", utils.SmoothedValue(window_size=1, fmt="{value:.2f}"))
     iou_types = ("bbox",) if not args.segmentation_head else ("bbox", "segm")
     coco_evaluator = CocoEvaluator(base_ds, iou_types, args.eval_max_dets)
 
@@ -480,15 +501,28 @@ def evaluate(model, criterion, postprocess, data_loader, base_ds, device, args=N
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 
+        if args.include_descriptors:
+            for descriptor in args.include_descriptors:
+                if descriptor == "shape":
+                    metric_logger.update(class_error_shape=loss_dict_reduced[f"class_error_{descriptor}"])
         if use_progress_bar:
             log_dict = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-            progress_iter.set_postfix(
-                {
-                    "class_loss": f"{log_dict['class_error']:.2f}",
-                    "box_loss": f"{log_dict['loss_bbox']:.2f}",
-                    "loss": f"{log_dict['loss']:.2f}",
-                }
-            )
+            initial_dict = {
+                "class_loss": f"{log_dict['class_error']:.2f}",
+                "box_loss": f"{log_dict['loss_bbox']:.2f}",
+                "loss": f"{log_dict['loss']:.2f}",
+            }
+            if args.include_descriptors:
+                for descriptor in args.include_descriptors:
+                    initial_dict[f"class_loss_{descriptor}"] = f"{log_dict[f"class_error_{descriptor}"]:.2f}"
+
+            progress_iter.set_postfix(initial_dict)
+            #    {
+            #        "class_loss": f"{log_dict['class_error']:.2f}",
+            #        "box_loss": f"{log_dict['loss_bbox']:.2f}",
+            #        "loss": f"{log_dict['loss']:.2f}",
+            #    }
+            #)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()

@@ -46,6 +46,12 @@ from rfdetr.util.misc import (
     nested_tensor_from_tensor_list,
 )
 
+DESCRIPTOR_MAP = {
+    "batter_polluted": 2,
+    "shape": 5,
+    "material": 7,
+    "occluded": 2,
+}
 
 class LWDETR(nn.Module):
     """This is the Group DETR v3 module that performs object detection"""
@@ -62,6 +68,7 @@ class LWDETR(nn.Module):
         two_stage=False,
         lite_refpoint_refine=False,
         bbox_reparam=False,
+        include_descriptors=None,
     ):
         """Initializes the model.
         Parameters:
@@ -81,6 +88,18 @@ class LWDETR(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.segmentation_head = segmentation_head
+
+        # NOTE: must be an nn.ModuleDict (not a plain dict) so the layers are registered as
+        # submodules and therefore moved by .to(device), trained, and saved in the state_dict.
+        self.descriptor_embeds = nn.ModuleDict()
+        if include_descriptors:
+            # init prior_prob setting for focal loss
+            prior_prob = 0.01
+            bias_value = -math.log((1 - prior_prob) / prior_prob)
+            for descriptor in include_descriptors:
+                embed = nn.Linear(hidden_dim, DESCRIPTOR_MAP[descriptor])
+                embed.bias.data = torch.ones(DESCRIPTOR_MAP[descriptor]) * bias_value
+                self.descriptor_embeds[descriptor] = embed
 
         query_dim = 4
         self.refpoint_embed = nn.Embedding(num_queries * group_detr, query_dim)
@@ -207,6 +226,10 @@ class LWDETR(nn.Module):
                 out["aux_outputs"] = self._set_aux_loss(
                     outputs_class, outputs_coord, outputs_masks if self.segmentation_head is not None else None
                 )
+            if self.descriptor_embeds:
+                for (descriptor, layer) in self.descriptor_embeds.items():
+                    output = layer(hs)
+                    out[f"pred_{descriptor}"] = output[-1]
 
         if self.two_stage:
             group_detr = self.group_detr if self.training else 1
@@ -268,6 +291,11 @@ class LWDETR(nn.Module):
                     ],
                     tensors.shape[-2:],
                 )[0]
+
+            outputs_descriptors = {}
+            if self.descriptor_embeds:
+                for (descriptor, layer) in self.descriptor_embeds.items():
+                    outputs_descriptors[descriptor] = layer(hs)
         else:
             assert self.two_stage, "if not using decoder, two_stage must be True"
             outputs_class = self.transformer.enc_out_class_embed[0](hs_enc)
@@ -283,7 +311,10 @@ class LWDETR(nn.Module):
                 )[0]
 
         if outputs_masks is not None:
-            return outputs_coord, outputs_class, outputs_masks
+            if outputs_descriptors:
+                return outputs_coord, outputs_class, outputs_masks, outputs_descriptors
+            else:
+                return outputs_coord, outputs_class, outputs_masks
         else:
             return outputs_coord, outputs_class
 
@@ -360,7 +391,8 @@ class SetCriterion(nn.Module):
         self.ia_bce_loss = ia_bce_loss
         self.mask_point_sample_ratio = mask_point_sample_ratio
 
-    def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
+    def loss_labels(self, outputs, targets, indices, num_boxes, descriptor=None, log=True):
+    #def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (Binary focal loss)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
@@ -483,8 +515,45 @@ class SetCriterion(nn.Module):
             losses["class_error"] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
         return losses
 
+    def loss_descriptors(self, outputs, targets, indices, num_boxes, descriptor, log=True):
+        """Classification loss (Binary focal loss)
+        targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
+        """
+        assert f"pred_{descriptor}" in outputs
+        src_logits = outputs[f"pred_{descriptor}"]
+
+        idx = self._get_src_permutation_idx(indices)
+        target_classes_o = torch.cat([t[descriptor][J] for t, (_, J) in zip(targets, indices)])
+
+        # TODO How do I get the num_classes from?
+        target_classes = torch.full(
+            src_logits.shape[:2], DESCRIPTOR_MAP[descriptor], dtype=torch.int64, device=src_logits.device
+        )
+        target_classes[idx] = target_classes_o
+
+        target_classes_onehot = torch.zeros(
+            [src_logits.shape[0], src_logits.shape[1], src_logits.shape[2] + 1],
+            dtype=src_logits.dtype,
+            layout=src_logits.layout,
+            device=src_logits.device,
+        )
+        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
+
+        target_classes_onehot = target_classes_onehot[:, :, :-1]
+        loss_ce = (
+            sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2)
+            * src_logits.shape[1]
+        )
+        losses = {f"loss_{descriptor}": loss_ce}
+
+        if log:
+            # TODO this should probably be a separate loss, not hacked in this one here
+            losses[f"class_error_{descriptor}"] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
+        return losses
+
     @torch.no_grad()
-    def loss_cardinality(self, outputs, targets, indices, num_boxes):
+    def loss_cardinality(self, outputs, targets, indices, num_boxes, descriptor=None):
+    #def loss_cardinality(self, outputs, targets, indices, num_boxes):
         """Compute the cardinality error, ie the absolute error in the number of predicted non-empty boxes
         This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
         """
@@ -497,7 +566,8 @@ class SetCriterion(nn.Module):
         losses = {"cardinality_error": card_err}
         return losses
 
-    def loss_boxes(self, outputs, targets, indices, num_boxes):
+    def loss_boxes(self, outputs, targets, indices, num_boxes, descriptor=None):
+    #def loss_boxes(self, outputs, targets, indices, num_boxes):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
         targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
         The target boxes are expected in format (center_x, center_y, w, h), normalized by the image size.
@@ -518,7 +588,8 @@ class SetCriterion(nn.Module):
         losses["loss_giou"] = loss_giou.sum() / num_boxes
         return losses
 
-    def loss_masks(self, outputs, targets, indices, num_boxes):
+    def loss_masks(self, outputs, targets, indices, num_boxes, descriptor=None):
+    #def loss_masks(self, outputs, targets, indices, num_boxes):
         """Compute BCE-with-logits and Dice losses for segmentation masks on matched pairs.
         Expects outputs to contain 'pred_masks' of shape [B, Q, H, W] and targets with key 'masks'.
         """
@@ -626,8 +697,10 @@ class SetCriterion(nn.Module):
             "boxes": self.loss_boxes,
             "masks": self.loss_masks,
         }
+        loss_map.update({descriptor: self.loss_descriptors for descriptor in DESCRIPTOR_MAP})
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
-        return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
+        return loss_map[loss](outputs, targets, indices, num_boxes, loss, **kwargs)
+        #return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
     def forward(self, outputs, targets):
         """This performs the loss computation.
@@ -661,6 +734,10 @@ class SetCriterion(nn.Module):
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
                 indices = self.matcher(aux_outputs, targets, group_detr=group_detr)
                 for loss in self.losses:
+                    # Descriptor heads only run on the final decoder layer, so there is no
+                    # `pred_<descriptor>` entry in the auxiliary outputs.
+                    if loss in DESCRIPTOR_MAP:
+                        continue
                     kwargs = {}
                     if loss == "labels":
                         # Logging is enabled only for the last layer
@@ -673,6 +750,8 @@ class SetCriterion(nn.Module):
             enc_outputs = outputs["enc_outputs"]
             indices = self.matcher(enc_outputs, targets, group_detr=group_detr)
             for loss in self.losses:
+                if loss in DESCRIPTOR_MAP:
+                    continue
                 kwargs = {}
                 if loss == "labels":
                     # Logging is enabled only for the last layer
@@ -813,6 +892,12 @@ class PostProcess(nn.Module):
         boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
         boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
 
+        out_shape = outputs.get("pred_shape", None)
+        if out_shape is not None:
+            prob_shape = out_shape.sigmoid()
+            topk_shape = torch.gather(prob_shape, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 5))
+            topk_shape_labels = torch.argmax(topk_shape, dim=2)
+
         # and from relative [0, 1] to absolute [0, height] coordinates
         img_h, img_w = target_sizes.unbind(1)
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
@@ -834,6 +919,8 @@ class PostProcess(nn.Module):
                     masks_i.unsqueeze(1), size=(int(h), int(w)), mode="bilinear", align_corners=False
                 )  # [K,1,H,W]
                 res_i["masks"] = masks_i > 0.0
+                if out_shape is not None:
+                    res_i["shape"] = topk_shape_labels[i]
                 results.append(res_i)
         else:
             results = [{"scores": s, "labels": l, "boxes": b} for s, l, b in zip(scores, labels, boxes)]
@@ -921,6 +1008,7 @@ def build_model(args):
         two_stage=args.two_stage,
         lite_refpoint_refine=args.lite_refpoint_refine,
         bbox_reparam=args.bbox_reparam,
+        include_descriptors=args.include_descriptors,
     )
     return model
 
@@ -942,9 +1030,19 @@ def build_criterion_and_postprocessors(args):
             aux_weight_dict.update({k + "_enc": v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
+    if args.include_descriptors:
+        for descriptor in args.include_descriptors:
+            # TODO Is cls_loss_coef correct?
+            # Key must match the loss name produced by `loss_descriptors` (`loss_<descriptor>`),
+            # otherwise the loss is dropped from the weighted sum in engine.train_one_epoch.
+            weight_dict[f"loss_{descriptor}"] = args.cls_loss_coef
+
     losses = ["labels", "boxes", "cardinality"]
     if args.segmentation_head:
         losses.append("masks")
+    if args.include_descriptors:
+        for descriptor in args.include_descriptors:
+            losses.append(descriptor)
 
     sum_group_losses = getattr(args, "sum_group_losses", False)
     if args.segmentation_head:

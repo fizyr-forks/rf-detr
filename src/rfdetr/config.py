@@ -73,6 +73,7 @@ class ModelConfig(BaseConfig):
     segmentation_head: bool = False
     mask_downsample_ratio: int = 4
     license: str = "Apache-2.0"
+    include_descriptors: list[str] = None
 
     @field_validator("pretrain_weights", mode="after")
     @classmethod
