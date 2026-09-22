@@ -219,6 +219,12 @@ def train_one_epoch(
                 if descriptor == "shape":
                     metric_logger.update(class_error_shape=loss_dict_reduced[f"class_error_{descriptor}"])
 
+                if descriptor == "material":
+                    metric_logger.update(class_error_material=loss_dict_reduced[f"class_error_{descriptor}"])
+
+                if descriptor == "occluded":
+                    metric_logger.update(class_error_occluded=loss_dict_reduced[f"class_error_{descriptor}"])
+
         if use_progress_bar:
             log_dict = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
             initial_dict = {
@@ -505,6 +511,12 @@ def evaluate(model, criterion, postprocess, data_loader, base_ds, device, args=N
             for descriptor in args.include_descriptors:
                 if descriptor == "shape":
                     metric_logger.update(class_error_shape=loss_dict_reduced[f"class_error_{descriptor}"])
+
+                if descriptor == "material":
+                    metric_logger.update(class_error_material=loss_dict_reduced[f"class_error_{descriptor}"])
+
+                if descriptor == "occluded":
+                    metric_logger.update(class_error_occluded=loss_dict_reduced[f"class_error_{descriptor}"])
         if use_progress_bar:
             log_dict = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
             initial_dict = {

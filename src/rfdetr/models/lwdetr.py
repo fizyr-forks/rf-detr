@@ -898,6 +898,18 @@ class PostProcess(nn.Module):
             topk_shape = torch.gather(prob_shape, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 5))
             topk_shape_labels = torch.argmax(topk_shape, dim=2)
 
+        out_material = outputs.get("pred_material", None)
+        if out_material is not None:
+            prob_material = out_material.sigmoid()
+            topk_material = torch.gather(prob_material, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 7))
+            topk_material_labels = torch.argmax(topk_material, dim=2)
+
+        out_occluded = outputs.get("pred_occluded", None)
+        if out_occluded is not None:
+            prob_occluded = out_occluded.sigmoid()
+            topk_occluded = torch.gather(prob_occluded, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 2))
+            topk_occluded_labels = torch.argmax(topk_occluded, dim=2)
+
         # and from relative [0, 1] to absolute [0, height] coordinates
         img_h, img_w = target_sizes.unbind(1)
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
@@ -921,6 +933,12 @@ class PostProcess(nn.Module):
                 res_i["masks"] = masks_i > 0.0
                 if out_shape is not None:
                     res_i["shape"] = topk_shape_labels[i]
+
+                if out_material is not None:
+                    res_i["material"] = topk_material_labels[i]
+
+                if out_occluded is not None:
+                    res_i["occluded"] = topk_occluded_labels[i]
                 results.append(res_i)
         else:
             results = [{"scores": s, "labels": l, "boxes": b} for s, l, b in zip(scores, labels, boxes)]

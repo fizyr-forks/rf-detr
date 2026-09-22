@@ -417,6 +417,12 @@ class RFDETR:
             if "shape" in result:
                 shape = result["shape"]
 
+            if "material" in result:
+                material = result["material"]
+
+            if "occluded" in result:
+                occluded = result["occluded"]
+
             keep = scores > threshold
             scores = scores[keep]
             labels = labels[keep]
@@ -426,6 +432,14 @@ class RFDETR:
             if "shape" in result:
                 shape = shape[keep]
                 data["shape"] = shape.cpu().numpy()
+
+            if "material" in result:
+                material = material[keep]
+                data["material"] = material.cpu().numpy()
+
+            if "occluded" in result:
+                occluded = occluded[keep]
+                data["occluded"] = occluded.cpu().numpy()
 
             if "masks" in result:
                 masks = result["masks"]
